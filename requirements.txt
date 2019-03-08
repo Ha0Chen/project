@@ -1,0 +1,13 @@
+pillow
+flask
+tensorflow
+
+
+
+
+
+
+
+
+
+
