@@ -1,15 +1,23 @@
-#coding:utf-8
 from PIL import Image
 import tensorflow as tf
-#import matplotlib.pyplot as plt
-#import time
+from cassandra.cluster import Cluster
+import time
 from flask import Flask,request,redirect, flash
 from werkzeug.utils import secure_filename
 import os
 
-UPLOAD_FOLDER = '/app'   #'/home/haochen/桌面/BigData/Docker'
+import logging
+log = logging.getLogger()
+log.setLevel('INFO')
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+log.addHandler(handler)
+
+
+UPLOAD_FOLDER ='/app'   #'/home/hchen/桌面/project'
 ALLOWED_EXTENSIONS = set(['png', 'jpg', 'JPG', 'PNG', 'bmp'])
- 
+localtime = time.strftime("%Y-%m-%d %H:%M:%S")
+KEYSPACE = "imagesapce"
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
@@ -32,14 +40,11 @@ def upload():
             return redirect(request.url)
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
-            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-        result = UseModel(f.filename)
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))              
+        result = useModel(f.filename)
+        insertValues(localtime,f.filename,result)
         return "The number in the picture is {}".format(result)
         
-        #basepath = os.path.dirname(__file__)
-        #upload_path = os.path.join(basepath, '/home/haochen/桌面/BigData/upload',secure_filename(f.filename))  #注意：没有的文件夹一定要先创建，不然会提示没有该路径
-        #f.save(upload_path)
-        #return redirect(url_for('upload'))
     
     return '''
     <!DOCTYPE html>
@@ -63,15 +68,9 @@ def imageprepare(file_name):
     This function returns the pixel values.
     The input is a png file location.
     """
-    #in terminal 'mogrify -format png *.jpg' convert jpg to png
-    im = Image.open(file_name)
-    # plt.imshow(im)
-    # plt.show()
-    im = im.convert('L')
-
-    #im.save("C:/Users/mechrevo/Desktop/sample.png")
     
-    
+    im = Image.open(file_name)  
+    im = im.convert('L')    
     tv = list(im.getdata()) #get pixel values
 
     #normalize pixels to 0 and 1. 0 is pure white, 1 is pure black.
@@ -84,9 +83,6 @@ def imageprepare(file_name):
     The input is the pixel values from the imageprepare() function.
     """
 
-    # Define the model (same as when creating the model file)
-
-#result=imageprepare("6.png")
 
 
 
@@ -141,7 +137,7 @@ def GetData():
     y_conv=tf.nn.softmax(tf.matmul(h_fc1_drop, W_fc2) + b_fc2)
     return y_conv, keep_prob, h_conv2, x, y_
 
-def UseModel(file_name):
+def useModel(file_name):
     result = imageprepare(file_name)
     y_conv, keep_prob,h_conv2, x, y_ = GetData()
     cross_entropy = -tf.reduce_sum(y_*tf.log(y_conv))
@@ -160,12 +156,59 @@ def UseModel(file_name):
         print(h_conv2)
         print('result:')
         print(predint[0])
-        
-        #im = Image.open("6.png")
-        #plt.imshow(im)
-        #plt.show()    
         return predint[0]
 
+def insertValues(localtime, filename, result):
+    cluster = Cluster(contact_points=['0.0.0.0'],port=9042)
+    session = cluster.connect()
+    try:
+
+       session.execute("""
+
+           CREATE KEYSPACE %s
+
+           WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': '2' }
+
+           """ % KEYSPACE)
+
+
+       log.info("setting keyspace...")
+
+       session.set_keyspace(KEYSPACE)
+
+
+       log.info("creating table...")
+
+       session.execute("""
+
+           CREATE TABLE mytable (
+
+               time text,
+
+               filename text,
+
+               result int,
+
+               PRIMARY KEY (time, filename, result)
+
+           )
+
+           """) 
+       session.execute("""
+                          
+                INSERT INTO mytable (time,filename,result) 
+    
+                VALUES (%s, %s, %s)
+    
+        	   """ ,(localtime,filename,result))
+
+    except Exception as e:
+
+       log.error("Unable to create keyspace")
+
+       log.error(e)
+        
+        
     
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=80)
